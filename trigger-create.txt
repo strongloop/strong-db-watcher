@@ -1,0 +1,16 @@
+BEGIN;
+DROP TRIGGER IF EXISTS db_watcher_trig_before_CU_%s ON %s;
+CREATE TRIGGER db_watcher_trig_before_CU_%s
+BEFORE INSERT OR UPDATE ON %s
+FOR EACH ROW EXECUTE PROCEDURE notify_NEW();
+COMMIT;
+
+DROP TRIGGER IF EXISTS db_watcher_trig_after_CU_%s ON %s;
+DROP TRIGGER IF EXISTS db_watcher_trig_before_D_%s ON %s;
+
+BEGIN;
+DROP TRIGGER IF EXISTS db_watcher_trig_after_D_%s ON %s;
+CREATE TRIGGER db_watcher_trig_after_D_%s
+AFTER DELETE ON %s
+FOR EACH ROW EXECUTE PROCEDURE notify_OLD();
+COMMIT;
