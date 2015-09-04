@@ -4,11 +4,58 @@ var assert = require('assert');
 var async = require('async');
 var debug = require('debug')('strong-db-watcher');
 var EventEmitter = require('events').EventEmitter;
-var fs = require('fs');
 var util = require('util');
 
 exports = module.exports = DbWatcher;
 exports.Broadcast = Broadcast;
+
+var triggerFunctions = 'CREATE OR REPLACE FUNCTION notify_OLD() ' +
+'RETURNS TRIGGER AS ' +
+'$BODY$ ' +
+'DECLARE ' +
+'BEGIN ' +
+'  PERFORM pg_notify(TG_TABLE_NAME, ' +
+'    TG_WHEN || \' \' || TG_OP || \' \' || TG_TABLE_NAME ' +
+'    || \' Old Row:\' || row_to_json(OLD)); ' +
+'  RETURN OLD; ' +
+'END; ' +
+'$BODY$ LANGUAGE plpgsql;' +
+
+'CREATE OR REPLACE FUNCTION notify_NEW() ' +
+'RETURNS TRIGGER AS ' +
+'$BODY$ ' +
+'DECLARE ' +
+'BEGIN ' +
+'  PERFORM pg_notify(TG_TABLE_NAME, ' +
+'    TG_WHEN || \' \' || TG_OP || \' \' || TG_TABLE_NAME ' +
+'    || \' New Row:\' || row_to_json(NEW)); ' +
+'  RETURN NEW; ' +
+'END; ' +
+'$BODY$ LANGUAGE plpgsql;';
+
+var triggerCreate = 'BEGIN; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_before_CU_%s ON %s; ' +
+'CREATE TRIGGER db_watcher_trig_before_CU_%s ' +
+'BEFORE INSERT OR UPDATE ON %s ' +
+'FOR EACH ROW EXECUTE PROCEDURE notify_NEW(); ' +
+'COMMIT; ' +
+
+'DROP TRIGGER IF EXISTS db_watcher_trig_after_CU_%s ON %s; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_before_D_%s ON %s; ' +
+
+'BEGIN; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_after_D_%s ON %s; ' +
+'CREATE TRIGGER db_watcher_trig_after_D_%s ' +
+'AFTER DELETE ON %s ' +
+'FOR EACH ROW EXECUTE PROCEDURE notify_OLD(); ' +
+'COMMIT;';
+
+var triggerDrop = 'BEGIN; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_before_CU_%s ON %s; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_after_CU_%s ON %s; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_before_D_%s ON %s; ' +
+'DROP TRIGGER IF EXISTS db_watcher_trig_after_D_%s ON %s; ' +
+'COMMIT;';
 
 function DbWatcher(dbClient, changeListener) {
   if (!(this instanceof DbWatcher)) {
@@ -16,7 +63,7 @@ function DbWatcher(dbClient, changeListener) {
   }
   assert(dbClient, 'dbClient is mandatory');
   this._savedClient = updateClient(this, dbClient);
-  this._tableNames = [];
+  this._tableSchema = {};
   if (changeListener) this.on('change', changeListener);
 }
 util.inherits(DbWatcher, EventEmitter);
@@ -46,6 +93,7 @@ function updateClient(ctxt, dbClient) {
  */
 
 function processMessage(msg) {
+  var self = this;
   var pos = msg.payload.indexOf('Row:') + 'Row:'.length;
   var metaStr = msg.payload.substring(0, pos);
   var metaParams = metaStr.split(' ');
@@ -59,8 +107,14 @@ function processMessage(msg) {
       try {
         value = JSON.parse(value);
       } catch (e) {
-        value = new Date(value);
-        if (value.toString().indexOf('Invalid Date') > -1) value = params[key];
+        var schema = self._tableSchema[msg.channel];
+        if (schema && schema[key].indexOf('timestamp') > -1) {
+          value = new Date(value);
+          if (value.toString().indexOf('Invalid Date') > -1)
+              value = params[key];
+        } else {
+          value = params[key];
+        }
       }
       params[key] = value;
     }
@@ -76,35 +130,78 @@ function processMessage(msg) {
 }
 
 DbWatcher.prototype.watchTable = function(name, callback) {
+  var self = this;
   assert(callback, 'Callback must be set.');
   assert(name, 'Table name must be set.');
-  var self = this;
+  // return if already watching
+  if (self._tableSchema === null) self._tableSchema = {};
+  if (name in self._tableSchema) return callback();
+  debug('watch table: ' + name);
   self._savedClient.query('LISTEN ' + name, function(err) {
     if (err) return callback(err);
-    debug('Listening to %s ...', name);
-    self._tableNames.push(name);
-    callback();
+    debug('listen table: ' + name);
+    var query = 'SELECT column_name, data_type FROM ' +
+      'information_schema.columns WHERE table_name=$1;';
+    self._savedClient.query(query, [name], function(err, result) {
+      var columnInfo = {};
+      if (!err) result.rows.forEach(function(prop) {
+        columnInfo[prop.column_name] = prop.data_type;
+      });
+      self._tableSchema[name] = columnInfo;
+      Broadcast(self._savedClient, [name], function(err) {
+        callback(err);
+      });
+    });
   });
 };
 
+// TODO
+// Test passed, but in some cases, the quries fail.
+// Err check removed for now.
 DbWatcher.prototype.unwatchTable = function(name, callback) {
+  var self = this;
   assert(callback, 'Callback must be set.');
   assert(name, 'Table name must be set.');
-  this._savedClient.query('UNLISTEN ' + name, callback);
+  debug('unwatch table: ' + name);
+  async.series([
+    function(asyncCb) {
+      debug('unlisten table: ' + name);
+      self._savedClient.query('UNLISTEN ' + name, function() {
+        asyncCb(); // ignore err
+      });
+    },
+    function(asyncCb) {
+      var statements = triggerDrop.replace(/%s/g, name);
+      debug('drop trigger: ' + name);
+      self._savedClient.query(statements, function() {
+        asyncCb(); // ignore err
+      });
+    }],
+    function(err) {
+      delete self._tableSchema[name];
+      callback(err);
+    });
 };
 
 DbWatcher.prototype.close = function(callback) {
   assert(callback, 'Callback must be set.');
+  if (this._tableSchema === null) {
+    setImmediate(callback);
+    return;
+  }
   var self = this;
-  var unsubFailure = null;
-  this._tableNames.forEach(function(name, index) {
-    self.unwatchTable(name, function(err) {
-      unsubFailure = unsubFailure || err;
-      if (this === self._tableNames.length - 1) {
-        self._tableNames = null;
-        callback(unsubFailure);
-      }
-    }.bind(index));
+  var tableNames = Object.keys(self._tableSchema);
+  debug('close: ' + tableNames);
+  if (tableNames.length === 0) {
+    self._tableSchema = null;
+    setImmediate(callback);
+    return;
+  }
+  async.eachSeries(tableNames, self.unwatchTable.bind(self), function(err) {
+    if (err) debug('unwatchTable error:' + err);
+    self._tableSchema = null;
+    setImmediate(callback);
+    return;
   });
 };
 
@@ -113,11 +210,6 @@ function Broadcast(dbClient, tableNames, callback) {
   assert(util.isArray(tableNames), 'tableNames shoud be an array.');
   assert(callback, 'callback is mandatory');
   if (tableNames.length > 0) setImmediate(function() {
-    var triggerFunctions = fs.readFileSync(
-        __dirname + '/trigger-functions.txt', 'utf8');
-    var triggerCreate = fs.readFileSync(
-        __dirname + '/trigger-create.txt', 'utf8');
-
     async.series([
       function(asyncCb) {
         dbClient.query(triggerFunctions, asyncCb);

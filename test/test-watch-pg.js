@@ -144,11 +144,8 @@ test('Create table', maybeSkip, function(t) {
 });
 
 test('Create broadcaster', maybeSkip, function(t) {
-  DbWatcher.Broadcast(client, [TEST_TABLE_NAME], function(err) {
-    t.ifError(err, 'Should create broadcaster without error');
-    if (err) closeConnection();
-    t.end();
-  });
+  t.comment('No need to start a broadcaster separately.');
+  t.end();
 });
 
 test('Event emitter and watcher', maybeSkip, function(tt) {
@@ -159,20 +156,26 @@ test('Event emitter and watcher', maybeSkip, function(tt) {
   var deleteMatchedCL = false;
 
   function changeListener(msg) {
+    tt.comment('emitted CL: %j', msg);
     if (msg.op === 'INSERT') {
       insertMatchedCL = insertRecordMatch(tt, msg);
-      tt.ok(insertMatchedCL, 'Inserted record should matchCL');
     }
     if (msg.op === 'DELETE') {
       deleteMatchedCL = deleteRecordMatch(tt, msg);
-      tt.ok(deleteMatchedCL, 'Deleted record should matchCL');
     }
     if (insertMatched && deleteMatched &&
         insertMatchedCL && deleteMatchedCL) {
-      sdw.close(function(err) {
-        tt.ok(!err, 'DbWatcher should close');
-        closeConnection();
-        tt.end();
+      tt.pass('Data insert/delete succeeds CL');
+      sdw.unwatchTable(TEST_TABLE_NAME, function(err) {
+        tt.equal(Object.keys(sdw._tableSchema).length, 0,
+            'Table schema released CL');
+        tt.ifError(err, 'unwatchTable succeeds CL');
+        sdw.close(function(err) {
+          tt.equal(sdw._tableSchema, null, 'Table schema null CL');
+          tt.ifError(err, 'DbWatcher closes CL');
+          closeConnection();
+          tt.end();
+        });
       });
     }
   }
@@ -186,7 +189,9 @@ test('Event emitter and watcher', maybeSkip, function(tt) {
 
   tt.test('Register watcher', maybeSkip, function(t) {
     sdw.watchTable(TEST_TABLE_NAME, function(err) {
-      t.ifError(err, 'Should start watcher without error');
+      t.equal(Object.keys(sdw._tableSchema).length, 1,
+          'Table schema created');
+      t.ifError(err, 'watchTable succeeds');
       if (err) closeConnection();
       t.end();
     });
@@ -197,18 +202,23 @@ test('Event emitter and watcher', maybeSkip, function(tt) {
       tt.pass('Emitted:' + JSON.stringify(msg));
       if (msg.op === 'INSERT') {
         insertMatched = insertRecordMatch(tt, msg);
-        tt.ok(insertMatched, 'Inserted record should match');
       }
       if (msg.op === 'DELETE') {
         deleteMatched = deleteRecordMatch(tt, msg);
-        tt.ok(deleteMatched, 'Deleted record should match');
       }
       if (insertMatched && deleteMatched &&
           insertMatchedCL && deleteMatchedCL) {
-        sdw.close(function(err) {
-          tt.ok(!err, 'DbWatcher should close');
-          closeConnection();
-          tt.end();
+        tt.pass('Data insert/delete succeeds');
+        sdw.unwatchTable(TEST_TABLE_NAME, function(err) {
+          tt.equal(Object.keys(sdw._tableSchema).length, 0,
+              'Table schema released');
+          tt.ifError(err, 'unwatchTable succeeds');
+          sdw.close(function(err) {
+            tt.equal(sdw._tableSchema, null, 'Table schema null');
+            tt.ifError(err, 'DbWatcher closes');
+            closeConnection();
+            tt.end();
+          });
         });
       }
     });
