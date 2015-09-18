@@ -3,35 +3,6 @@
 Event broadcast/watch mechanism triggered by internal database events
 such as Create, Update or Delete.
 
-
-## Broadcast: Class method
-
-- `dbClient` a postgres handle already connected to the DB
-- `tableNames` array of {String}
-- `callback` {Function} called with err.  err being null means Broadcast setup completed.
-
-Broadcast registers triggers and associates the triggers with tables.
-In distributed environment, all the users of strong-db-watcher need to agree on
-the triggers and the tables.  When backward incompatible changes are made to triggers
-or tables to be watched, all broadcasters and watchers need to be updated.
-
-
-## Usage: Broadcast
-
-```
-    var pg = require('pg');
-    var DbWatcher = require('strong-db-watcher');
-    var tableName = 'serviceinstance';
-
-    var client = new pg.Client(<connection string>);
-    client.connect(function(err) {
-
-      DbWatcher.Broadcast(client, [tableName], function(err) {
-        if (err) console.log('Broadcast error');
-    });
-```
-
-
 ## DbWatcher: Class, inherits EventEmitter
 
 - `dbClient` a postgres handle already connected to the DB
@@ -77,12 +48,14 @@ unwatch all the watching tables
     var client = new pg.Client(<connection string>);
     client.connect(function(err) {
       var sdw = new DbWatcher(client,
-        function(err, result) {
+        function(result) {
           ... all events are watched ...
           ... switch (result.table) case to ...
           ... process all events here or emit your own event ...
         });
-    sdw.watchTable(name);
+    sdw.watchTable(name, function(err) {
+      console.log('watchTable error');
+    });
 ```
 
 ## Usage: notified by Events
@@ -96,11 +69,13 @@ unwatch all the watching tables
     client.connect(function(err) {
       var sdw = new DbWatcher(client);
       sdw.on(name,
-        function(err, result) {
+        function(result) {
           ... process the result here ...
           ... events for the table only ...
         });
-    sdw.watchTable(name);
+    sdw.watchTable(name, function(err) {
+      console.log('watchTable error');
+    });
 ```
 
 ## Result:
