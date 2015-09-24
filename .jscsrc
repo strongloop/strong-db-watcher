@@ -1,5 +1,5 @@
 {
-  "excludeFiles": ["node_modules/**"],
+  "excludeFiles": ["node_modules/**", "coverage/**", ".nyc_output/**"],
   "disallowMixedSpacesAndTabs": true,
   "disallowKeywordsOnNewLine": [],
   "requireCurlyBraces": [

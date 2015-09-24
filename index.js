@@ -155,6 +155,10 @@ DbWatcher.prototype.watchTable = function(name, callback) {
   });
 };
 
+DbWatcher.prototype.isWatching = function(name, fn) {
+  return name in this._tableSchema && this.listeners(name).indexOf(fn) >= 0;
+};
+
 // TODO
 // Test passed, but in some cases, the quries fail.
 // Err check removed for now.
@@ -178,6 +182,7 @@ DbWatcher.prototype.unwatchTable = function(name, callback) {
       });
     }],
     function(err) {
+      self.removeAllListeners(name);
       delete self._tableSchema[name];
       callback(err);
     });
@@ -191,7 +196,6 @@ DbWatcher.prototype.close = function(callback) {
   }
   var self = this;
   var tableNames = Object.keys(self._tableSchema);
-  debug('close: ' + tableNames);
   if (tableNames.length === 0) {
     self._tableSchema = null;
     setImmediate(callback);
@@ -200,6 +204,7 @@ DbWatcher.prototype.close = function(callback) {
   async.eachSeries(tableNames, self.unwatchTable.bind(self), function(err) {
     if (err) debug('unwatchTable error:' + err);
     self._tableSchema = null;
+    debug('closed all tables');
     setImmediate(callback);
     return;
   });

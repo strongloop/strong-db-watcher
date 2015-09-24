@@ -8,7 +8,7 @@ such as Create, Update or Delete.
 - `dbClient` a postgres handle already connected to the DB
 - `changeListener` {Function} called at every watched event with (result) where,
     - result: {Object}
-      - `table` {String} table name,
+      - `table` {String} table name
       - `op` {String} `INSERT`, `UPDATE`, `INSERTorUPDATE`, or `DELETE`
       - `when` {String} `BEFORE`, `AFTER`, or `UNSPECIFIED`
       - `payload`{Object} database record
@@ -22,8 +22,15 @@ such as Create, Update or Delete.
 
 ### watchTable
 
-- `name` {String} table name,
+- `name` {String} table name
 - `callback` {Function} called with err
+
+### isWatching
+
+returns {Boolean}
+
+- `name` {String} table name
+- `fn` {Function} listener function
 
 ### unwatchTable
 
