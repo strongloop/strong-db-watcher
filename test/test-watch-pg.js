@@ -19,6 +19,8 @@ var POSTGRESQL_PARAM = fmt('postgres://%s@%s:%d/template1',
                            process.env.POSTGRESQL_PORT || 5432);
 
 var TEST_TABLE_NAME = 'sdw_test';
+var TEST_TABLE_NAME_2 = 'sdw_test_2';
+var TEST_TABLE_NAME_3 = 'sdw_test_3';
 
 var INSERT_PAYLOAD = {
   id: 18227,
@@ -59,7 +61,11 @@ function createTable(t, client, callback) {
   var query = 'CREATE TEMPORARY TABLE IF NOT EXISTS ' + TEST_TABLE_NAME
       + ' (id integer primary key, text varchar, bool boolean, object varchar,'
       + ' ts timestamp);';
-  client.query(query, function(err) {
+  var query2 = fmt('CREATE TEMPORARY TABLE %s AS TABLE %s;',
+                 TEST_TABLE_NAME_2, TEST_TABLE_NAME);
+  var query3 = fmt('CREATE TEMPORARY TABLE %s AS TABLE %s;',
+                 TEST_TABLE_NAME_3, TEST_TABLE_NAME);
+  client.query(query + query2 + query3, function(err) {
     if (err) closeConnection();
     callback(err);
   });
@@ -150,24 +156,26 @@ test('Create broadcaster', maybeSkip, function(t) {
 
 test('Event emitter and watcher', maybeSkip, function(tt) {
 
-  var insertMatched = false;
-  var deleteMatched = false;
-  var insertMatchedCL = false;
-  var deleteMatchedCL = false;
+  var insertMatched = null;
+  var deleteMatched = null;
+  var insertMatchedCL = null;
+  var deleteMatchedCL = null;
 
   function changeListener(msg) {
     tt.comment('emitted CL: %j', msg);
     if (msg.op === 'INSERT') {
+      tt.equal(insertMatchedCL, null, 'insertRecordMatch CL called once');
       insertMatchedCL = insertRecordMatch(tt, msg);
     }
     if (msg.op === 'DELETE') {
+      tt.equal(deleteMatchedCL, null, 'deleteRecordMatch CL called once');
       deleteMatchedCL = deleteRecordMatch(tt, msg);
     }
     if (insertMatched && deleteMatched &&
         insertMatchedCL && deleteMatchedCL) {
       tt.pass('Data insert/delete succeeds CL');
       sdw.unwatchTable(TEST_TABLE_NAME, function(err) {
-        tt.equal(Object.keys(sdw._tableSchema).length, 0,
+        tt.equal(Object.keys(sdw._tableSchema).length, 1,
             'Table schema released CL');
         tt.ifError(err, 'unwatchTable succeeds CL');
         sdw.close(function(err) {
@@ -197,31 +205,55 @@ test('Event emitter and watcher', maybeSkip, function(tt) {
     });
   });
 
+  tt.test('Register 2nd watcher', maybeSkip, function(t) {
+    sdw.watchTable(TEST_TABLE_NAME_2, function(err) {
+      t.equal(Object.keys(sdw._tableSchema).length, 2,
+          'Table schema created');
+      t.ifError(err, 'watchTable 2nd succeeds');
+      if (err) closeConnection();
+      t.end();
+    });
+  });
+
   tt.test('Start watcher', maybeSkip, function(t) {
-    sdw.on(TEST_TABLE_NAME, function(msg) {
+
+    function watchFn(msg) {
       tt.pass('Emitted:' + JSON.stringify(msg));
       if (msg.op === 'INSERT') {
+        tt.equal(insertMatched, null, 'insertRecordMatch called once');
         insertMatched = insertRecordMatch(tt, msg);
       }
       if (msg.op === 'DELETE') {
+        tt.equal(deleteMatched, null, 'deleteRecordMatch called once');
         deleteMatched = deleteRecordMatch(tt, msg);
       }
       if (insertMatched && deleteMatched &&
           insertMatchedCL && deleteMatchedCL) {
         tt.pass('Data insert/delete succeeds');
         sdw.unwatchTable(TEST_TABLE_NAME, function(err) {
-          tt.equal(Object.keys(sdw._tableSchema).length, 0,
-              'Table schema released');
           tt.ifError(err, 'unwatchTable succeeds');
+          tt.equal(Object.keys(sdw._tableSchema).length, 1,
+              'Table schema released');
+          tt.ok(!sdw.isWatching(TEST_TABLE_NAME, watchFn),
+              'not watching ' + TEST_TABLE_NAME);
           sdw.close(function(err) {
-            tt.equal(sdw._tableSchema, null, 'Table schema null');
             tt.ifError(err, 'DbWatcher closes');
+            tt.equal(sdw._tableSchema, null, 'Table schema null');
             closeConnection();
             tt.end();
           });
         });
       }
-    });
+    }
+
+    sdw.on(TEST_TABLE_NAME, watchFn);
+    t.ok(sdw.isWatching(TEST_TABLE_NAME, watchFn),
+        'watching ' + TEST_TABLE_NAME);
+    t.ok(!sdw.isWatching(TEST_TABLE_NAME_2, watchFn),
+        'not watching ' + TEST_TABLE_NAME_2);
+    sdw.on(TEST_TABLE_NAME_3, watchFn);
+    t.ok(!sdw.isWatching(TEST_TABLE_NAME_3, watchFn),
+        'not watching ' + TEST_TABLE_NAME_3);
     t.end();
   });
 
